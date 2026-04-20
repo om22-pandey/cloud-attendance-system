@@ -1,8 +1,10 @@
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
-const morgan = require('morgan');
+const morgan = require('morgan');3
 const rateLimit = require('express-rate-limit');
+const jwt = require('jsonwebtoken');
+const bcrypt = require('bcrypt');
 require('dotenv').config();
 
 const app = express();
@@ -32,6 +34,27 @@ app.use(express.urlencoded({ extended: true }));
 
 // Logging middleware
 app.use(morgan('combined'));
+
+const verifyTeacher = (req, res, next) => {
+  try {
+    // const token = req.headers.authorization?.split(" ")[1];
+    const token = req.headers.authorization;
+
+    if (!token) return res.status(401).json({ error: "No token" });
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
+    if (decoded.role !== "teacher") {
+      return res.status(403).json({ error: "Only teacher allowed" });
+    }
+
+    req.user = decoded; // optional
+    next();
+
+  } catch (err) {
+    return res.status(401).json({ error: "Invalid token" });
+  }
+};
 
 // Database connection (PostgreSQL/RDS)
 const { Pool } = require('pg');
@@ -87,6 +110,58 @@ app.get('/', (req, res) => {
       attendance: '/api/attendance',
       records: '/api/attendance/records'
     }
+  });
+});
+
+// Register user (teacher/student)
+app.post('/api/register', async (req, res) => {
+  const { email, password, role } = req.body;
+
+  const hashedPassword = await bcrypt.hash(password, 10);
+
+  try {
+    const result = await pool.query(
+      'INSERT INTO users (email, password, role) VALUES ($1, $2, $3) RETURNING *',
+      [email, hashedPassword, role]
+    );
+
+    res.json({ success: true, data: result.rows[0] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/login', async (req, res) => {
+  const { email, password } = req.body;
+
+  const user = await pool.query(
+    'SELECT * FROM users WHERE email=$1',
+    [email]
+  );
+
+  if (user.rows.length === 0) {
+    return res.status(401).json({ error: "Invalid user" });
+  }
+
+  const valid = await bcrypt.compare(password, user.rows[0].password);
+
+  if (!valid) return res.status(401).json({ error: "Wrong password" });
+
+  const token = jwt.sign(
+    { role: user.rows[0].role },
+    process.env.JWT_SECRET,
+    { expiresIn: "1h" }
+
+  );
+
+  res.json({
+  token,
+  user: {
+    id: user.rows[0].id,
+    email: user.rows[0].email,
+    role: user.rows[0].role,
+    name: user.rows[0].name || "User"
+  }
   });
 });
 
@@ -150,7 +225,7 @@ app.post('/api/students', async (req, res) => {
 });
 
 // Mark attendance
-app.post('/api/attendance', async (req, res) => {
+app.post('/api/attendance', verifyTeacher, async (req, res) => {
   const { student_id, status, date, notes } = req.body;
   
   if (!student_id || !status) {
@@ -203,7 +278,7 @@ app.post('/api/attendance', async (req, res) => {
 
 // Get attendance records
 app.get('/api/attendance/records', async (req, res) => {
-  const { student_id, start_date, end_date, status } = req.query;
+  const { student_id, start_date, end_date, status, admin } = req.query;
   
   try {
     let query = `
@@ -215,32 +290,38 @@ app.get('/api/attendance/records', async (req, res) => {
     const params = [];
     let paramIndex = 1;
 
+    
     if (student_id) {
       query += ` AND s.student_id = $${paramIndex}`;
       params.push(student_id);
       paramIndex++;
     }
-
+    
     if (start_date) {
       query += ` AND a.date >= $${paramIndex}`;
       params.push(start_date);
       paramIndex++;
     }
-
+    
     if (end_date) {
       query += ` AND a.date <= $${paramIndex}`;
       params.push(end_date);
       paramIndex++;
     }
-
+    
     if (status) {
       query += ` AND a.status = $${paramIndex}`;
       params.push(status);
       paramIndex++;
     }
-
+    if (admin) {
+      query += ` AND a.marked_by = $${paramIndex}`;
+      params.push(admin);
+      paramIndex++;
+    }
+    
     query += ' ORDER BY a.date DESC, s.name';
-
+    
     const result = await pool.query(query, params);
     
     res.json({
@@ -276,28 +357,34 @@ app.get('/api/attendance/stats', async (req, res) => {
       FROM students s
       LEFT JOIN attendance a ON s.id = a.student_id
       WHERE 1=1
+      
     `;
     const params = [];
     let paramIndex = 1;
-
+    
     if (student_id) {
       query += ` AND s.student_id = $${paramIndex}`;
       params.push(student_id);
       paramIndex++;
     }
-
+    
     if (start_date) {
       query += ` AND a.date >= $${paramIndex}`;
       params.push(start_date);
       paramIndex++;
     }
-
+    
     if (end_date) {
       query += ` AND a.date <= $${paramIndex}`;
       params.push(end_date);
       paramIndex++;
     }
-
+    
+    if (admin) {
+      query += ` AND a.marked_by = $${paramIndex}`;
+      params.push(admin);
+      paramIndex++;
+    }
     query += ' GROUP BY s.student_id, s.name ORDER BY s.name';
 
     const result = await pool.query(query, params);
@@ -313,6 +400,86 @@ app.get('/api/attendance/stats', async (req, res) => {
       success: false,
       error: 'Failed to fetch attendance statistics',
       message: error.message
+    });
+  }
+});
+
+app.post("/api/attendance/bulk", verifyTeacher, async (req, res) => {
+  try {
+    const { date, records } = req.body;
+
+    if (!records || records.length === 0) {
+      return res.json({ success: false, error: "No records provided" });
+    }
+
+    const attendanceDate = date || new Date().toISOString().split("T")[0];
+
+    for (let r of records) {
+      await pool.query(
+      `INSERT INTO attendance (student_id, date, status, marked_by)
+      VALUES (
+        (SELECT id FROM students WHERE student_id = $1),
+        $2,
+        $3,
+        $4
+      )
+      ON CONFLICT (student_id, date, marked_by)
+      DO UPDATE SET status = $3`,
+      [r.student_id, attendanceDate, r.status, req.user.id]
+    );
+    }
+
+    res.json({ success: true });
+
+  } catch (err) {
+    console.error(err);
+    res.json({ success: false, error: err.message });
+  }
+});
+// new api for showing admins
+app.get("/api/admins", async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT id, name, email 
+      FROM users 
+      WHERE role = 'teacher' 
+      AND email LIKE 'admin%'
+    `);
+
+    res.json({ success: true, data: result.rows });
+
+  } catch (err) {
+    res.json({ success: false, error: err.message });
+  }
+});
+
+// new api for adding admins
+app.post('/api/admins', async (req, res) => {
+  try {
+    const { name, email } = req.body;
+
+    const result = await pool.query(
+      `INSERT INTO users (name, email, password, role)
+       VALUES ($1, $2, $3, $4)
+       RETURNING *`,
+      [
+        name,
+        email,
+        '123456',   // default password
+        'teacher'   // 🔥 admin = teacher in your system
+      ]
+    );
+
+    res.json({
+      success: true,
+      data: result.rows[0]
+    });
+
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({
+      success: false,
+      error: error.message
     });
   }
 });

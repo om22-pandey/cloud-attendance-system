@@ -1,24 +1,20 @@
-# Backend Dockerfile for Node.js Application
-FROM node:18-alpine
+# 1. Base image
+FROM node:18
 
-# Set working directory
+# 2. Working directory
 WORKDIR /app
 
-# Copy package files
+# 3. Package files copy
 COPY package*.json ./
 
-# Install dependencies
-RUN npm ci --only=production
+# 4. Install dependencies
+RUN npm install
 
-# Copy application code
+# 5. Full code copy
 COPY . .
 
-# Expose application port
+# 6. Port expose
 EXPOSE 5000
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD node -e "require('http').get('http://localhost:5000/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"
-
-# Start the application
+# 7. Run server
 CMD ["node", "server.js"]

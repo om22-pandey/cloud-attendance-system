@@ -1,0 +1,33 @@
+version: "3"
+
+services:
+
+  db:
+    image: postgres:15
+    container_name: postgres-db
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postom2004
+      POSTGRES_DB: attendance_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  backend:
+    build: ./backend
+    ports:
+      - "5000:5000"
+    env_file:
+      - ./backend/.env
+    depends_on:
+      - db
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:3000"
+
+volumes:
+  postgres_data:
