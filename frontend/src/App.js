@@ -152,7 +152,7 @@ const groupedRecords = groupByDate(attendanceRecords);
   // handle login
 const handleLogin = async () => {
   try {
-    const res = await fetch("http://localhost:5000/api/login", {
+    const res = await fetch(`${API_BASE_URL}/api/login`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json"
@@ -185,7 +185,7 @@ const handleLogin = async () => {
 // handle register
 const handleRegister = async () => {
   try {
-    const res = await fetch("http://localhost:5000/api/register", {
+    const res = await fetch(`${API_BASE_URL}/api/register`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json"
